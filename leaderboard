@@ -1,0 +1,105 @@
+--[[
+================================================================================
+Leaderboard Manager
+
+Description: This script creates andmanages player leaderstats using the
+SafeStore module to ensure data is loaded and displayed correctly.
+
+Author: xgabrix79x (known as sqldev)
+
+Dependencies: Requires the 'SafeStore' ModuleScript in ServerScriptService.
+Alternatively, use the same datastore name, or change the datastore names in both the scripts.
+
+Location: Place this script directly inside ServerScriptService.
+================================================================================
+]]
+
+--// Services
+local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+--// Modules
+-- Make sure your SafeStore module is in ServerScriptService
+local SafeStore = require(ServerScriptService.SafeStore)
+
+--// Configuration
+-- This table defines the data that will be created for a brand new player.
+-- It MUST match the stats you want to display on the leaderboard.
+local NEW_PLAYER_DATA = {
+    Cash = 50,
+    Rebirths = 0,
+    Level = 1,
+}
+
+--==============================================================================
+--// FUNCTIONS
+--==============================================================================
+
+-- This function creates the visual leaderstats folder and values for a player.
+local function setupLeaderstats(player, playerData)
+    print("Setting up leaderstats for: " .. player.Name)
+
+    local leaderstats = Instance.new("Folder")
+    leaderstats.Name = "leaderstats"
+
+    -- Create IntValue/NumberValue objects for each stat
+    local cashStat = Instance.new("IntValue")
+    cashStat.Name = "Cash"
+    cashStat.Value = playerData.Cash
+    cashStat.Parent = leaderstats
+
+    local rebirthsStat = Instance.new("IntValue")
+    rebirthsStat.Name = "Rebirths"
+    rebirthsStat.Value = playerData.Rebirths
+    rebirthsStat.Parent = leaderstats
+    
+    local levelStat = Instance.new("IntValue")
+    levelStat.Name = "Level"
+    levelStat.Value = playerData.Level
+    levelStat.Parent = leaderstats
+
+    -- This is a powerful feature of SafeStore.
+    -- When data is changed anywhere using SafeStore:UpdateData(),
+    -- this will automatically update the leaderstats values.
+    SafeStore:OnDataUpdated(player, function(updatedData)
+        cashStat.Value = updatedData.Cash
+        rebirthsStat.Value = updatedData.Rebirths
+        levelStat.Value = updatedData.Level
+        print(player.Name .. "'s leaderstats have been updated visually.")
+    end)
+
+    leaderstats.Parent = player
+end
+
+-- This function is called every time a new player joins the game.
+local function onPlayerAdded(player)
+    -- This line gets the player's data. It will wait until the data is loaded
+    -- from the DataStore or will create a new profile from NEW_PLAYER_DATA.
+    local playerData = SafeStore:GetData(player, NEW_PLAYER_DATA)
+
+    -- The player might be kicked by SafeStore (e.g. session lock),
+    -- so we check if playerData was successfully returned.
+    if playerData then
+        setupLeaderstats(player, playerData)
+
+        --[[
+        -- EXAMPLE: Here is how you would give a player cash.
+        -- You can call this from any other server script by requiring SafeStore.
+        task.wait(15) -- Wait 15 seconds after joining
+        
+        print("Giving welcome bonus to " .. player.Name)
+        SafeStore:UpdateData(player, function(currentData)
+            -- This function receives the current data, modifies it, and returns it.
+            currentData.Cash = currentData.Cash + 100
+            return currentData
+        end)
+        ]]
+    end
+end
+
+--==============================================================================
+--// CONNECTIONS?
+--==============================================================================
+
+-- Connect the onPlayerAdded function to the PlayerAdded event.
+Players.PlayerAdded:Connect(onPlayerAdded)
