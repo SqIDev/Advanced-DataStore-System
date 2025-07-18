@@ -1,4 +1,3 @@
---[[
 SafeStore: A Robust DataStore Module for Roblox
 SafeStore is a powerful wrapper for Roblox's DataStoreService designed to make saving and loading player data safe, reliable, and easy. It abstracts away the common pitfalls of data management, such as API errors, data loss from rapid re-joining (session locking), and manual saving, allowing you to focus on building your game.
 
@@ -34,4 +33,3 @@ Create a ModuleScript in ServerScriptService.
 Name it SafeStore.
 
 Paste the module's code into the script.
---]]
