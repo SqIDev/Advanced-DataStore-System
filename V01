@@ -1,0 +1,243 @@
+--[[
+================================================================================
+SafeStore Module
+Version: 1.0
+Author: xgabrix79x (known as sqldev)
+
+Description: A robust wrapper for DataStoreService that handles
+session locking, automatic retries, caching, and autosaving
+to make data management safe and reliable.
+
+Installation Issues:
+If you see an error like StudioAccessToApisNotAllowed: Studio access to APIs is not allowed in your Output window, you must enable API services.
+To fix this, go to File > Game Settings > Security and turn on Enable Studio Access to API Services. Click Save.
+If you encounter other errors, it may be due to Roblox engine updates. Please refer to the official Roblox documentation for the functions used in this module.
+
+Testing Fuctionality:
+This datastore is a back-end aspect, meaning that is not visible when playing the game
+to make sure that it works in terms of game usage, it must be related to a leaderboard;
+or to a more advanced system such as UI that uses datastore data to update /change the points.
+
+Please note that datastore systems can also save objects, tranformed in information.
+This wold add an extra layer of lines of code, but the concept is similar.
+================================================================================
+]]
+
+local SafeStore = {}
+SafeStore.__index = SafeStore
+
+--// Services
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+
+--// Configuration
+local Config = {
+    AUTOSAVE_INTERVAL = 60, -- Seconds between each autosave
+    RETRY_ATTEMPTS = 3, -- How many times to retry a failed DataStore call
+    RETRY_DELAY = 2, -- Seconds to wait between each retry
+    SESSION_LOCK_KICK_MESSAGE = "Your data is currently locked to another server. Please wait a minute and rejoin.",
+}
+
+--// Main DataStore
+-- Change "PlayerData" to a unique name for your game to avoid conflicts
+local playerDataStore = DataStoreService:GetDataStore("PlayerData_v1.1")
+
+--// Internal Variables
+local playerDataCache = {} -- [Player] = { Data = {}, IsLocked = false }
+local onDataUpdated = Instance.new("BindableEvent")
+
+--==============================================================================
+--// INTERNAL FUNCTIONS
+--==============================================================================
+
+-- Function to retry a DataStore operation multiple times
+local function retryDataStoreOperation(operation, ...)
+    for attempt = 1, Config.RETRY_ATTEMPTS do
+        local success, result = pcall(operation, ...)
+        if success then
+            return true, result
+        end
+        warn("DataStore attempt " .. attempt .. " failed: " .. tostring(result))
+        if attempt < Config.RETRY_ATTEMPTS then
+            task.wait(Config.RETRY_DELAY)
+        end
+    end
+    return false, "All DataStore attempts failed."
+end
+
+-- Function to save a player's data
+local function saveData(player)
+    if not playerDataCache[player] or not player:IsDescendantOf(Players) then
+        return false, "Player not found or cache unavailable."
+    end
+
+    local dataToSave = playerDataCache[player].Data
+    local userId = player.UserId
+
+    local success, err = retryDataStoreOperation(function()
+        -- The session lock is removed by saving the data
+        playerDataStore:SetAsync("user_" .. userId, dataToSave)
+    end)
+
+    if success then
+        print("Data saved for " .. player.Name)
+        return true
+    else
+        warn("Critical error while saving data for " .. player.Name .. ": " .. tostring(err))
+        return false, err
+    end
+end
+
+-- Function to load a player's data
+local function loadData(player, template)
+    local userId = player.UserId
+    local key = "user_" .. userId
+
+    -- Check if data is locked (session locking)
+    local isLockedKey = "sessionlock_" .. userId
+    local success, isLocked = retryDataStoreOperation(function()
+        return playerDataStore:GetAsync(isLockedKey)
+    end)
+
+    if not success then
+        return nil, "Could not verify session lock."
+    end
+
+    if isLocked and (os.time() - isLocked) < Config.AUTOSAVE_INTERVAL then
+        return nil, Config.SESSION_LOCK_KICK_MESSAGE
+    end
+
+    -- Lock the session for this server
+    retryDataStoreOperation(function()
+        playerDataStore:SetAsync(isLockedKey, os.time())
+    end)
+
+    -- Load the actual data
+    local data
+    success, data = retryDataStoreOperation(function()
+        return playerDataStore:GetAsync(key)
+    end)
+
+    if not success then
+        return nil, "Could not load data."
+    end
+
+    if data then
+        -- Existing data found
+        playerDataCache[player] = { Data = data, IsLocked = true }
+        print("Data loaded for " .. player.Name)
+    else
+        -- New player, create data from template
+        playerDataCache[player] = { Data = template, IsLocked = true }
+        print("Created new data profile for " .. player.Name)
+    end
+
+    return playerDataCache[player].Data
+end
+
+--==============================================================================
+--// MODULE API FUNCTIONS
+--==============================================================================
+
+--[[
+    Loads a player's data or creates new data.
+    Manages session locking to prevent data corruption.
+    @param player The Player object whose data to load.
+    @param template A table with the default data for new players.
+    @return The table with the player's data.
+]]
+function SafeStore:GetData(player, template)
+    if playerDataCache[player] then
+        return playerDataCache[player].Data
+    end
+
+    local data, err = loadData(player, template)
+    if not data then
+        player:Kick(err)
+        return nil
+    end
+
+    return data
+end
+
+--[[
+    Safely updates a player's data in the cache.
+    @param player The Player object to update.
+    @param updateFunction A function that receives the current data and returns the modified data.
+]]
+function SafeStore:UpdateData(player, updateFunction)
+    if not playerDataCache[player] then
+        warn("Attempted to update data for " .. player.Name .. " before it was loaded.")
+        return
+    end
+
+    local currentData = playerDataCache[player].Data
+    local newData = updateFunction(currentData)
+    playerDataCache[player].Data = newData
+
+    -- Notify that the data has been updated
+    onDataUpdated:Fire(player, newData)
+end
+
+--[[
+    Connects a function that will be called whenever a player's data is updated.
+    @param player The Player object to listen to.
+    @param callbackFunction The function to execute (receives the new data table as an argument).
+]]
+function SafeStore:OnDataUpdated(player, callbackFunction)
+    return onDataUpdated.Event:Connect(function(updatedPlayer, newData)
+        if updatedPlayer == player then
+            callbackFunction(newData)
+        end
+    end)
+end
+
+--==============================================================================
+--// EVENT HANDLING
+--==============================================================================
+
+local function onPlayerRemoving(player)
+    if playerDataCache[player] then
+        saveData(player)
+        playerDataCache[player] = nil -- Clear the cache
+    end
+end
+
+-- Save everyone's data when the server shuts down
+game:BindToClose(function()
+    if not RunService:IsStudio() then
+        print("Initiating final data save for all players...")
+        local saveTasks = {}
+        for player, _ in pairs(playerDataCache) do
+            table.insert(saveTasks, task.spawn(saveData, player))
+        end
+        -- Wait for all save operations to complete
+        for _, taskThread in ipairs(saveTasks) do
+            task.wait(taskThread)
+        end
+        print("Final save completed.")
+    end
+end)
+
+-- Autosave loop
+task.spawn(function()
+    while true do
+        task.wait(Config.AUTOSAVE_INTERVAL)
+        for player, cache in pairs(playerDataCache) do
+            if cache.IsLocked then
+                print("Autosaving for " .. player.Name)
+                -- Update the session lock and save the data
+                retryDataStoreOperation(function()
+                    playerDataStore:SetAsync("sessionlock_" .. player.UserId, os.time())
+                end)
+                saveData(player)
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+print("SafeStore Module loaded.")
+return SafeStore
